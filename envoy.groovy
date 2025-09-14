@@ -29,9 +29,11 @@ metadata {
         capability "Refresh"
         capability "Polling"
 
-        attribute "production_energy_now", "number"
-        attribute "consumption_energy_now", "number"
-        attribute "jwt_token", "string"
+        attribute "production_power_now", "number"
+        attribute "production_power_average", "number"
+        attribute "consumption_power_now", "number"
+        attribute "consumption_power_average", "number"
+        attribute "excess_power_average", "number"
     }
 }
 
@@ -41,10 +43,10 @@ preferences {
         input "email", "text", title: "Enlighten Email", required: true
         input "pass", "password", title: "Enlighten password", required: true
         input "serial", "text", title: "Envoy Serial Number", required: true
+        input "productionmeter", "text", title: "Production Meter eid", required: true
+        input "netconsumptionmeter", "text", title: "Net Consumption Meter eid", required: true
         input "polling", "text", title: "Polling Interval (mins)", required: true, defaultValue: "15", range: 1..59
         input name: "logEnable", type: "bool", title: "Enable debug logging", defaultValue: true
-        input "productionmeter", title: "Production Meter", required: true
-        input "netconsumptionmeter", title: "Net Consumption Meter", required: true
     }
 }
 
@@ -59,6 +61,64 @@ void poll() {
 
 void refresh() {
     pullData()
+}
+
+def setProdStates(production) {
+    if (!state.p1) {
+        state.p1=production
+        return production
+    } else if (!state.p2) {
+        state.p2=state.p1
+        state.p1=production
+        return (state.p2+production)/2 as Integer
+    } else if (!state.p3) {
+        state.p3=state.p2
+        state.p2=state.p1
+        state.p1=production
+        return (state.p3+state.p2+production)/3 as Integer
+    } else if (!state.p4) {
+        state.p4=state.p3
+        state.p3=state.p2
+        state.p2=state.p1
+        state.p1=production
+        return (state.p4+state.p3+state.p2+production)/4 as Integer
+    } else {
+        Integer avg = (state.p4+state.p3+state.p2+state.p1+production)/5 as Integer
+        state.p4=state.p3
+        state.p3=state.p2
+        state.p2=state.p1
+        state.p1=production
+        return avg
+    }
+}
+
+def setConsStates(consumption) {
+    if (!state.c1) {
+        state.c1=consumption
+        return consumption
+    } else if (!state.c2) {
+        state.c2=state.c1
+        state.c1=consumption
+        return (state.c2+consumption)/2 as Integer
+    } else if (!state.c3) {
+        state.c3=state.c2
+        state.c2=state.c1
+        state.c1=consumption
+        return (state.c3+state.c2+consumption)/3 as Integer
+    } else if (!state.c4) {
+        state.c4=state.c3
+        state.c3=state.c2
+        state.c2=state.c1
+        state.c1=consumption
+        return (state.c4+state.c3+state.c2+consumption)/4 as Integer
+    } else {
+        Integer avg = (state.c4+state.c3+state.c2+state.c1+consumption)/5 as Integer
+        state.c4=state.c3
+        state.c3=state.c2
+        state.c2=state.c1
+        state.c1=consumption
+        return avg
+    }
 }
 
 void pullData() {
@@ -93,16 +153,25 @@ void pullData() {
             log.warn "HTTP get failed: ${e.message}"
         }
 
-        Map production_data = energy_data.find{ it.eid == settings.productionmeter }
-        Map consumption_data = energy_data.find{ it.eid == settings.netconsumptionmeter }
+        Map production_data = energy_data.find{ it.eid == settings.productionmeter as Integer }
+        Map consumption_data = energy_data.find{ it.eid == settings.netconsumptionmeter as Integer }
         Integer net_metering = -consumption_data?.activePower as Integer
         Integer production = production_data?.activePower as Integer
         Integer consumption = production - net_metering
 
-        sendEvent(name: "production_energy_now", value: production, isStateChange: true)
-        sendEvent(name: "consumption_energy_now", value: consumptioner, isStateChange: true)
+        sendEvent(name: "production_power_now", value: production, isStateChange: true)
+        sendEvent(name: "consumption_power_now", value: consumption, isStateChange: true)
         sendEvent(name: "power", value: net_metering, unit: "w", isStateChange: true)
+        
+        Integer avg_prod = setProdStates(production)
+        sendEvent(name: "production_power_average", value: avg_prod, isStateChange: true)
+        
+        Integer avg_cons = setConsStates(consumption)
+        sendEvent(name: "consumption_power_average", value: avg_cons, isStateChange: true)
+        
+        sendEvent(name: "excess_power_average", value: avg_prod-avg_cons, isStateChange: true)
 
+		
     } else
         log.warn "Unable to get a valid token. Aborting..."
 }
@@ -191,7 +260,6 @@ String getToken() {
         if (session != null) {
             String token_generated = generateToken(session)
             if (token_generated != null && isValidToken(token_generated)) {
-                sendEvent(name: "jwt_token", value: token_generated, displayed: false)
                 state.jwt_token = token_generated
                 valid_token = token_generated
             } else {
