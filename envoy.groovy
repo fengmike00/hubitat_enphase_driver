@@ -23,20 +23,13 @@ void setVersion(){
 }
 
 metadata {
-    definition(name: "Enphase Envoy-S Production Data", namespace: "community", author: "Mike Feng") {
+    definition(name: "Enphase Envoy-S Production Data", namespace: "community", author: "(modified from Supun Vidana Pathiranage's code)") {
         capability "Sensor"
         capability "Power Meter"
-        capability "Energy Meter"
         capability "Refresh"
         capability "Polling"
 
-        attribute "production_energy_today", "number"
-        attribute "production_energy_last7days", "number"
-        attribute "production_energy_life", "number"
         attribute "production_energy_now", "number"
-        attribute "consumption_energy_today", "number"
-        attribute "consumption_energy_last7days", "number"
-        attribute "consumption_energy_life", "number"
         attribute "consumption_energy_now", "number"
         attribute "jwt_token", "string"
     }
@@ -48,22 +41,16 @@ preferences {
         input "email", "text", title: "Enlighten Email", required: true
         input "pass", "password", title: "Enlighten password", required: true
         input "serial", "text", title: "Envoy Serial Number", required: true
-        input "polling", "text", title: "Polling Interval (mins)", required: true, defaultValue: "15", range: 2..59
+        input "polling", "text", title: "Polling Interval (mins)", required: true, defaultValue: "15", range: 1..59
         input name: "logEnable", type: "bool", title: "Enable debug logging", defaultValue: true
+        input "productionmeter", title: "Production Meter", required: true
+        input "netconsumptionmeter", title: "Net Consumption Meter", required: true
     }
 }
 
 void logsOff() {
     log.warn "debug logging disabled..."
     device.updateSetting("logEnable", [value: "false", type: "bool"])
-}
-
-void updated() {
-    log.info "updated..."
-    log.warn "debug logging is: ${logEnable == true}"
-    if (logEnable) runIn(1800, logsOff)
-    setPolling()
-    updateSchedule()
 }
 
 void poll() {
@@ -76,7 +63,7 @@ void refresh() {
 
 void pullData() {
     String ip = settings.ip - "https://" - "http://" - "/"
-    String production_url = "https://" + ip + "/api/v1/energy"
+    String production_url = "https://" + ip + "/ivp/meters/readings"
     List energy_data = []
 
     if (logEnable) log.debug "Pulling data..."
@@ -106,20 +93,14 @@ void pullData() {
             log.warn "HTTP get failed: ${e.message}"
         }
 
-        Map production_data = energy_data.find{ it.type == 'Production' }
-        Map consumption_data = energy_data.find{ it.type == 'Consumption' }
-        Integer net_metering = (production_data?.wattsNow - consumption_data?.wattsNow) as Integer
+        Map production_data = energy_data.find{ it.eid == settings.productionmeter }
+        Map consumption_data = energy_data.find{ it.eid == settings.netconsumptionmeter }
+        Integer net_metering = -consumption_data?.activePower as Integer
+        Integer production = production_data?.activePower as Integer
+        Integer consumption = production - net_metering
 
-        sendEvent(name: "production_energy_today", value: production_data?.wattHoursToday, displayed: false)
-        sendEvent(name: "production_energy_last7days", value: production_data?.wattHoursSevenDays, displayed: false)
-        sendEvent(name: "production_energy_life", value: production_data?.wattHoursLifetime, displayed: false)
-        sendEvent(name: "production_energy_now", value: production_data?.wattsNow, isStateChange: true)
-
-        sendEvent(name: "consumption_energy_today", value: consumption_data?.wattHoursToday, displayed: false)
-        sendEvent(name: "consumption_energy_last7days", value: consumption_data?.wattHoursSevenDays, displayed: false)
-        sendEvent(name: "consumption_energy_life", value: consumption_data?.wattHoursLifetime, displayed: false)
-        sendEvent(name: "consumption_energy_now", value: consumption_data?.wattsNow, isStateChange: true)
-
+        sendEvent(name: "production_energy_now", value: production, isStateChange: true)
+        sendEvent(name: "consumption_energy_now", value: consumptioner, isStateChange: true)
         sendEvent(name: "power", value: net_metering, unit: "w", isStateChange: true)
 
     } else
@@ -255,62 +236,6 @@ String generateToken(String session_id) {
     }
     if (logEnable) log.debug "Generated token : ${token}"
     return token
-}
-
-void updateCheck(){
-    setVersion()
-    String updateMsg = ""
-    Map params = [uri: "https://raw.githubusercontent.com/vpsupun/hubitat-eaton-xcomfort/master/resources/version.json", contentType: "application/json; charset=utf-8"]
-    try {
-        httpGet(params) { resp ->
-            if (logEnable) log.debug " Version Checking - Response Data: ${resp.data}"
-            if (logEnable) log.debug " ${state.appName} Debug Driver info : ${resp.data.driver.EatonXComfort}"
-            Map driverInfo = resp.data.driver.get(state.appName)
-            if (driverInfo != null) {
-                if (logEnable) log.debug " Debug Driver info : ${driverInfo}"
-                String newVerRaw = driverInfo?.version as String
-                Integer newVer = newVerRaw?.replace(".", "") as Integer
-                Integer currentVer = state.version.replace(".", "") as Integer
-                String updateInfo = driverInfo?.updateInfo
-                switch (newVer) {
-                    case 999:
-                        updateMsg = "<b>** This driver is no longer supported by the auther, ${state.author} **</b>"
-                        log.warn "** This driver is no longer supported by the auther, ${state.author} **"
-                        break;
-                    case 000:
-                        updateMsg = "<b>** This driver is still in beta **</b>"
-                        log.warn "** This driver is still in beta **"
-                        break;
-                    case currentVer:
-                        updateMsg = "up to date"
-                        log.info "You are using the current version of this driver"
-                        state.remove("newVersionChangeLog")
-                        break;
-                    default :
-                        updateMsg = "<b>** A new version is available (version: ${newVerRaw}) **</b>"
-                        log.warn "** A new version is available (version: ${newVerRaw}) **"
-                        state.newVersionChangeLog = updateInfo
-                }
-                state.author = resp.data.author
-                state.versionInfo = updateMsg
-            } else {
-                if (logEnable) log.warn "Version update is not implemented for this app !"
-                state.remove("newVersionChangeLog")
-                state.remove("versionInfo")
-            }
-        }
-    }
-    catch (e) {
-        log.error "Error while fetching the version information ${e}"
-    }
-}
-
-void updateSchedule(){
-    unschedule(updateCheck)
-    def hour = Math.round(Math.floor(Math.random() * 23))
-    String cron = "0 0 ${hour} * * ? *"
-    updateCheck()
-    schedule(cron, updateCheck)
 }
 
 void setPolling() {
