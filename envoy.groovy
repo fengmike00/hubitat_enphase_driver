@@ -28,12 +28,15 @@ metadata {
         capability "Power Meter"
         capability "Refresh"
         capability "Polling"
+        
+        command    "WipeState"
 
         attribute "production_power_now", "number"
         attribute "production_power_average", "number"
         attribute "consumption_power_now", "number"
         attribute "consumption_power_average", "number"
         attribute "excess_power_average", "number"
+        attribute "excess_power_min","number"
     }
 }
 
@@ -61,64 +64,6 @@ void poll() {
 
 void refresh() {
     pullData()
-}
-
-def setProdStates(production) {
-    if (!state.p1) {
-        state.p1=production
-        return production
-    } else if (!state.p2) {
-        state.p2=state.p1
-        state.p1=production
-        return (state.p2+production)/2 as Integer
-    } else if (!state.p3) {
-        state.p3=state.p2
-        state.p2=state.p1
-        state.p1=production
-        return (state.p3+state.p2+production)/3 as Integer
-    } else if (!state.p4) {
-        state.p4=state.p3
-        state.p3=state.p2
-        state.p2=state.p1
-        state.p1=production
-        return (state.p4+state.p3+state.p2+production)/4 as Integer
-    } else {
-        Integer avg = (state.p4+state.p3+state.p2+state.p1+production)/5 as Integer
-        state.p4=state.p3
-        state.p3=state.p2
-        state.p2=state.p1
-        state.p1=production
-        return avg
-    }
-}
-
-def setConsStates(consumption) {
-    if (!state.c1) {
-        state.c1=consumption
-        return consumption
-    } else if (!state.c2) {
-        state.c2=state.c1
-        state.c1=consumption
-        return (state.c2+consumption)/2 as Integer
-    } else if (!state.c3) {
-        state.c3=state.c2
-        state.c2=state.c1
-        state.c1=consumption
-        return (state.c3+state.c2+consumption)/3 as Integer
-    } else if (!state.c4) {
-        state.c4=state.c3
-        state.c3=state.c2
-        state.c2=state.c1
-        state.c1=consumption
-        return (state.c4+state.c3+state.c2+consumption)/4 as Integer
-    } else {
-        Integer avg = (state.c4+state.c3+state.c2+state.c1+consumption)/5 as Integer
-        state.c4=state.c3
-        state.c3=state.c2
-        state.c2=state.c1
-        state.c1=consumption
-        return avg
-    }
 }
 
 void pullData() {
@@ -163,15 +108,23 @@ void pullData() {
         sendEvent(name: "consumption_power_now", value: consumption, isStateChange: true)
         sendEvent(name: "power", value: net_metering, unit: "w", isStateChange: true)
         
-        Integer avg_prod = setProdStates(production)
+        List<Integer> state_production=state.production << production
+        state_production=state_production.takeRight(5)
+        state.production=state_production
+        List<Integer> state_consumption=state.consumption << consumption
+        state_consumption=state_consumption.takeRight(5)
+        state.consumption=state_consumption
+        List<Integer> state_net=state.net << production-consumption
+        state_net=state_net.takeRight(5)
+        state.net=state_net
+        Integer avg_prod = (int) state_production.sum() / state_production.size()
         sendEvent(name: "production_power_average", value: avg_prod, isStateChange: true)
-        
-        Integer avg_cons = setConsStates(consumption)
+        Integer avg_cons = (int) state_consumption.sum() / state_consumption.size()
         sendEvent(name: "consumption_power_average", value: avg_cons, isStateChange: true)
-        
-        sendEvent(name: "excess_power_average", value: avg_prod-avg_cons, isStateChange: true)
-
-		
+        Integer avg_net = (int) state_net.sum() / state_net.size()
+        Integer min_net = state_net.min()
+        sendEvent(name: "excess_power_average", value: avg_net, isStateChange: true)
+        sendEvent(name: "excess_power_min", value: min_net, isStateChange: true)
     } else
         log.warn "Unable to get a valid token. Aborting..."
 }
@@ -244,11 +197,8 @@ String getSession() {
 String getToken() {
     String valid_token
     String current_token
-    // migrate from attribute to state variable
     if (state.jwt_token != null) {
         current_token = state.jwt_token
-    } else if (device.currentValue("jwt_token", true) != null) {
-        state.jwt_token = device.currentValue("jwt_token", true)
     }
     if (logEnable) log.debug "Retrieving the token"
     if (current_token != null && isValidToken(current_token)) {
@@ -312,4 +262,26 @@ void setPolling() {
     def min = Math.round(Math.floor(Math.random() * settings.polling.toInteger()))
     String cron = "${sec} ${min}/${settings.polling.toInteger()} * * * ?" // every N min
     schedule(cron, pullData)
+}
+
+def updated() {
+   setPolling()
+    state.production=[0]
+    state.consumption=[0]
+    state.net=[0]
+   log.debug "updated"
+}
+
+def WipeState() {
+	log.warn "wiping states"
+	state.clear()
+    state.production=[0]
+    state.consumption=[0]
+    state.net=[0]
+}
+
+def installed() {
+    state.production=[0]
+    state.consumption=[0]
+    state.net=[0]
 }
